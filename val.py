@@ -133,7 +133,7 @@ def run(
     device="",  # cuda device, i.e. 0 or 0,1,2,3 or cpu
     workers=8,  # max dataloader workers (per RANK in DDP mode)
     single_cls=False,  # treat as single-class dataset
-    augment=False,  # augmented inference
+    augment=True,  # augmented inference
     verbose=False,  # verbose output
     save_txt=False,  # save results to *.txt
     save_hybrid=False,  # save label+prediction hybrid results to *.txt
