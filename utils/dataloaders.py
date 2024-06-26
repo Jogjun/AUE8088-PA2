@@ -1111,7 +1111,9 @@ class LoadRGBTImagesAndLabels(LoadImagesAndLabels):
         super().__init__(path, **kwargs)
 
         # TODO: make mosaic augmentation work
-        self.mosaic = False
+        self.mosaic = True
+        if self.augment == False:
+            self.mosaic = False
 
         # Set ignore flag
         cond = self.ignore_settings['train' if is_train else 'test']
@@ -1215,18 +1217,9 @@ class LoadRGBTImagesAndLabels(LoadImagesAndLabels):
 
         hyp = self.hyp
         mosaic = self.mosaic and random.random() < hyp["mosaic"]
-        if mosaic:
-            # raise NotImplementedError('Please make "mosaic" augmentation work!')
 
-            # TODO: Load mosaic
-            img, labels = self.load_mosaic(index)
-            shapes = None
 
-            # TODO: MixUp augmentation
-            if random.random() < hyp["mixup"]:
-                img, labels = mixup(img, labels, *self.load_mosaic(random.choice(self.indices)))
-
-        else:
+        if self.augment == False:
             # Load image
             # hw0s: original shapes, hw1s: resized shapes
             imgs, hw0s, hw1s = self.load_image(index)
@@ -1236,6 +1229,50 @@ class LoadRGBTImagesAndLabels(LoadImagesAndLabels):
                 shape = self.batch_shapes[self.batch[index]] if self.rect else self.img_size  # final letterboxed shape
                 img, ratio, pad = letterbox(img, shape, auto=False, scaleup=self.augment)
                 shapes = (h0, w0), (ratio, pad)  # for COCO mAP rescaling
+
+
+                labels = self.labels[index].copy()
+                if labels.size:  # normalized xywh to pixel xyxy format
+                    labels[:, 1:3] += labels[:, 3:5] / 2.0      # (x_lefttop, y_lefttop) -> (x_center, y_center)
+                    labels[:, 1:] = xywhn2xyxy(labels[:, 1:], ratio[0] * w, ratio[1] * h, padw=pad[0], padh=pad[1])
+
+                nl = len(labels)  # number of labels
+                if nl:
+                    labels[:, 1:5] = xyxy2xywhn(labels[:, 1:5], w=img.shape[1], h=img.shape[0], clip=True, eps=1e-3)                
+
+                labels_out = torch.zeros((nl, 7))
+                if nl:
+                    labels_out[:, 1:] = torch.from_numpy(labels)
+
+                # Convert
+                img = img.transpose((2, 0, 1))[::-1]  # HWC to CHW, BGR to RGB
+                img = np.ascontiguousarray(img)
+
+                imgs[ii] = torch.from_numpy(img)
+
+        else:        
+            if mosaic:
+                # raise NotImplementedError('Please make "mosaic" augmentation work!')
+
+                # TODO: Load mosaic
+                imgs, labels = self.load_mosaic(index)
+                shapes = None
+
+                # TODO: MixUp augmentation
+                if random.random() < hyp["mixup"]:
+                    imgs, labels = mixup(imgs, labels, *self.load_mosaic(random.choice(self.indices)))
+
+            else:
+                # Load image
+                # hw0s: original shapes, hw1s: resized shapes
+                imgs, hw0s, hw1s = self.load_image(index)
+
+                for ii, (img, (h0, w0), (h, w)) in enumerate(zip(imgs, hw0s, hw1s)):
+                    # Letterbox
+                    shape = self.batch_shapes[self.batch[index]] if self.rect else self.img_size  # final letterboxed shape
+                    img, ratio, pad = letterbox(img, shape, auto=False, scaleup=self.augment)
+                    shapes = (h0, w0), (ratio, pad)  # for COCO mAP rescaling
+                    imgs[ii] = img
 
                 labels = self.labels[index].copy()
                 if labels.size:  # normalized xywh to pixel xyxy format
@@ -1255,43 +1292,45 @@ class LoadRGBTImagesAndLabels(LoadImagesAndLabels):
                         perspective=hyp["perspective"],
                     )
 
-                nl = len(labels)  # number of labels
-                if nl:
-                    labels[:, 1:5] = xyxy2xywhn(labels[:, 1:5], w=img.shape[1], h=img.shape[0], clip=True, eps=1e-3)
+            nl = len(labels)  # number of labels
+            if nl:
+                labels[:, 1:5] = xyxy2xywhn(labels[:, 1:5], w=imgs[0].shape[1], h=imgs[0].shape[0], clip=True, eps=1e-3)
 
-                if self.augment:
-                    # Albumentations
-                    img, labels = self.albumentations(img, labels)
-                    nl = len(labels)  # update after albumentations
+            if self.augment:
+                # # Albumentations
+                # img, labels = self.albumentations(img, labels)
+                # nl = len(labels)  # update after albumentations
 
-                    # HSV color-space
-                    augment_hsv(img, hgain=hyp["hsv_h"], sgain=hyp["hsv_s"], vgain=hyp["hsv_v"])
+                # HSV color-space
+                augment_hsv(imgs[1], hgain=hyp["hsv_h"], sgain=hyp["hsv_s"], vgain=hyp["hsv_v"])
 
-                    # Flip up-down
-                    if random.random() < hyp["flipud"]:
-                        img = np.flipud(img)
-                        if nl:
-                            labels[:, 2] = 1 - labels[:, 2]
+                # Flip up-down
+                if random.random() < hyp["flipud"]:
+                    for ii in range(len(imgs)):
+                        imgs[ii] = np.flipud(imgs[ii])
+                    if nl:
+                        labels[:, 2] = 1 - labels[:, 2]
 
-                    # Flip left-right
-                    if random.random() < hyp["fliplr"]:
-                        img = np.fliplr(img)
-                        if nl:
-                            labels[:, 1] = 1 - labels[:, 1]
+                # Flip left-right
+                if random.random() < hyp["fliplr"]:
+                    for ii in range(len(imgs)):
+                        imgs[ii] = np.fliplr(imgs[ii])
+                    if nl:
+                        labels[:, 1] = 1 - labels[:, 1]
 
-                    # Cutouts
-                    labels = cutout(img, labels, p=0.5)
-                    nl = len(labels)  # update after cutout
+                # Cutouts
+                # labels = cutout(img, labels, p=0.5)
+                # nl = len(labels)  # update after cutout
 
-                labels_out = torch.zeros((nl, 7))
-                if nl:
-                    labels_out[:, 1:] = torch.from_numpy(labels)
+            labels_out = torch.zeros((nl, 7))
+            if nl:
+                labels_out[:, 1:] = torch.from_numpy(labels)
 
-                # Convert
-                img = img.transpose((2, 0, 1))[::-1]  # HWC to CHW, BGR to RGB
-                img = np.ascontiguousarray(img)
-
-                imgs[ii] = torch.from_numpy(img)
+            # Convert
+            for ii in range(len(imgs)):
+                imgs[ii] = imgs[ii].transpose((2, 0, 1))[::-1]  # HWC to CHW, BGR to RGB
+                imgs[ii] = np.ascontiguousarray(imgs[ii])
+                imgs[ii] = torch.from_numpy(imgs[ii])
 
         # Drop occlusion level
         labels_out = labels_out[:, :-1]
